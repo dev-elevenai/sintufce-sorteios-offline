@@ -18,6 +18,9 @@ formal do aplicativo offline.
 O protocolo de alto rigor está em
 [`docs/architecture/ALGORITHM-v1.md`](docs/architecture/ALGORITHM-v1.md).
 
+Dependências para operação e compilação estão em
+[`docs/DEPENDENCIAS.md`](docs/DEPENDENCIAS.md).
+
 ## Desenvolvimento
 
 ```bash
