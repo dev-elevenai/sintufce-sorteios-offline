@@ -50,6 +50,7 @@ struct DrawView {
     participant_name: String,
     siape: String,
     prize: String,
+    status: String,
 }
 
 fn initialize_database(path: &std::path::Path) -> Result<Connection, String> {
@@ -295,6 +296,7 @@ fn draw_next(database: State<'_, Database>) -> Result<DrawView, String> {
         participant_name: participant.2,
         siape: participant.3,
         prize: prize.1,
+        status: "VALID".into(),
     };
     append_audit(
         &tx,
@@ -303,6 +305,30 @@ fn draw_next(database: State<'_, Database>) -> Result<DrawView, String> {
     )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(view)
+}
+
+#[tauri::command]
+fn list_draws(database: State<'_, Database>) -> Result<Vec<DrawView>, String> {
+    let connection = database
+        .0
+        .lock()
+        .map_err(|_| "Banco local indisponível".to_string())?;
+    let mut statement = connection.prepare("SELECT d.sequence,e.ticket,e.name,e.siape,p.name,d.status FROM draw d JOIN eligible e ON e.uuid=d.eligible_uuid JOIN prize p ON p.position=d.prize_position ORDER BY d.sequence").map_err(|e| e.to_string())?;
+    let mapped = statement
+        .query_map([], |r| {
+            Ok(DrawView {
+                sequence: r.get(0)?,
+                ticket: r.get(1)?,
+                participant_name: r.get(2)?,
+                siape: r.get(3)?,
+                prize: r.get(4)?,
+                status: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    mapped
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -423,6 +449,7 @@ pub fn run() {
             commit_auditors,
             seal_event,
             draw_next,
+            list_draws,
             mark_absent,
             finish_event,
             export_report

@@ -27,3 +27,4 @@ details { margin-top: 12px; } code { display: block; overflow-wrap: anywhere; ma
 .error { margin-top: 18px; padding: 12px; border-radius: 8px; background: #fce8e8; color: #8a1520; }
 .winner { display: grid; gap: 8px; margin: 18px 0; padding: 24px; border: 2px solid #9b111e; border-radius: 10px; text-align: center; }
 .winner span { color: #707783; } .winner strong { font-size: 30px; } .winner small { margin: 0; }
+table { width: 100%; border-collapse: collapse; } th, td { padding: 10px; border-bottom: 1px solid #e2ddd5; text-align: left; font-size: 13px; } th { color: #707783; }
