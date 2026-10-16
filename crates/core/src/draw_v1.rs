@@ -14,12 +14,19 @@ const SALT_DOMAIN: &[u8] = b"SINTUFCE/SALT/V1\0";
 const NONCE_DOMAIN: &[u8] = b"SINTUFCE/NONCE/V1\0";
 const HKDF_INFO: &[u8] = b"SINTUFCE/DRAW/V1";
 const ELIGIBLES_DOMAIN: &[u8] = b"SINTUFCE/ELIGIBLES/V1\0";
+const PRIZES_DOMAIN: &[u8] = b"SINTUFCE/PRIZES/V1\0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EligibleIdentity {
     pub uuid: Uuid,
     pub ticket: String,
     pub siape: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrizeIdentity {
+    pub order: u32,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +49,13 @@ pub struct DrawInput {
     pub prizes_hash: [u8; 32],
     pub federal: FederalResult,
     pub auditor_reveals: Vec<AuditorReveal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawProof {
+    pub algorithm_version: &'static str,
+    pub seed_hash: [u8; 32],
+    pub permutation: Vec<usize>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -84,10 +98,32 @@ pub fn canonical_eligible_hash(eligibles: &[EligibleIdentity]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+pub fn canonical_prize_hash(prizes: &[PrizeIdentity]) -> [u8; 32] {
+    let mut canonical = prizes.to_vec();
+    canonical.sort_by_key(|prize| prize.order);
+
+    let mut digest = Sha256::new();
+    digest.update(PRIZES_DOMAIN);
+    digest.update((canonical.len() as u64).to_be_bytes());
+    for prize in canonical {
+        digest.update(prize.order.to_be_bytes());
+        let name: String = prize.name.trim().nfc().collect();
+        update_sized_text(&mut digest, &name);
+    }
+    digest.finalize().into()
+}
+
 pub fn draw_permutation(
     input: &DrawInput,
     eligible_count: usize,
 ) -> Result<Vec<usize>, DrawProtocolError> {
+    draw_proof(input, eligible_count).map(|proof| proof.permutation)
+}
+
+pub fn draw_proof(
+    input: &DrawInput,
+    eligible_count: usize,
+) -> Result<DrawProof, DrawProtocolError> {
     if eligible_count == 0 {
         return Err(DrawProtocolError::EmptyEligibleList);
     }
@@ -129,7 +165,11 @@ pub fn draw_permutation(
         let selected = random.uniform_below((last + 1) as u64) as usize;
         permutation.swap(last, selected);
     }
-    Ok(permutation)
+    Ok(DrawProof {
+        algorithm_version: "SINTUFCE-DRAW-V1",
+        seed_hash: Sha256::digest(seed).into(),
+        permutation,
+    })
 }
 
 fn derive_seed(input: &DrawInput, reveals: &[AuditorReveal]) -> [u8; 32] {

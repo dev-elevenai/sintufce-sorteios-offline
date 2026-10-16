@@ -1,6 +1,7 @@
 use sintufce_sorteio_core::draw_v1::{
-    AuditorReveal, DrawInput, DrawProtocolError, EligibleIdentity, FederalResult,
-    auditor_commitment, canonical_eligible_hash, draw_permutation,
+    AuditorReveal, DrawInput, DrawProtocolError, EligibleIdentity, FederalResult, PrizeIdentity,
+    auditor_commitment, canonical_eligible_hash, canonical_prize_hash, draw_permutation,
+    draw_proof,
 };
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -98,4 +99,33 @@ fn rejeita_numero_federal_fora_do_formato_oficial() {
         draw_permutation(&invalid, 10),
         Err(DrawProtocolError::InvalidFederalResult)
     ));
+}
+
+#[test]
+fn hash_dos_premios_e_canonico_pela_ordem_lacrada() {
+    let first = PrizeIdentity {
+        order: 1,
+        name: "Televisão".into(),
+    };
+    let second = PrizeIdentity {
+        order: 2,
+        name: "Cesta".into(),
+    };
+
+    assert_eq!(
+        canonical_prize_hash(&[first.clone(), second.clone()]),
+        canonical_prize_hash(&[second, first]),
+    );
+}
+
+#[test]
+fn prova_publica_versao_e_impressao_digital_da_semente() {
+    let proof = draw_proof(&input(), 10).unwrap();
+
+    assert_eq!(proof.algorithm_version, "SINTUFCE-DRAW-V1");
+    assert_eq!(
+        hex::encode(proof.seed_hash),
+        "07a48663a30e077b89b9c1298b9d0a5ce957b6ad215611f5f26413f40a747643"
+    );
+    assert_eq!(proof.permutation, vec![9, 8, 4, 6, 1, 5, 3, 0, 7, 2]);
 }
