@@ -12,10 +12,10 @@ use sintufce_sorteio_core::{
     package::{PackageValidator, TrustedKeys},
     result_package::{DrawRecord, ResultManifest, ResultPackageBuilder, ResultPayload},
 };
-use std::{collections::HashMap, fs::File, sync::Mutex};
+use std::{collections::HashMap, fs::File, path::{Path, PathBuf}, sync::Mutex};
 use tauri::{Manager, State};
 
-struct Database(Mutex<Connection>);
+struct Database(Mutex<Connection>, PathBuf);
 
 const ONLINE_KEY_ID: &str = "sintufce-prod-2026-01";
 const ONLINE_PUBLIC_KEY_HEX: &str = "8f2ead5257bb7b9ae1e2345256fbdc461aac967db63499e3dab60e6750e9d4a6";
@@ -118,17 +118,32 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
         .collect();
     let list_hash = hex::encode(canonical_eligible_hash(&identities));
     let prizes_hash = hex::encode(canonical_prize_hash(&prize_ids));
-    let secret = session_identity::generate_secret()?;
-    let protected_secret = session_identity::protect(&secret)?;
-    let session_public_key = hex::encode(SigningKey::from_bytes(&secret).verifying_key().to_bytes());
     let export_nonce = package.manifest.export_nonce.clone().ok_or("Pacote sem nonce de exportação")?;
     let source_package_hash = package.package_hash.clone();
     let mut connection = database
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
-    let tx = connection.transaction().map_err(|e| e.to_string())?;
-    tx.execute_batch("DELETE FROM draw;DELETE FROM audit;DELETE FROM auditor_commit;DELETE FROM eligible;DELETE FROM prize;DELETE FROM event;").map_err(|e| e.to_string())?;
+    let event_id = package.manifest.event_id.to_string();
+    if let Some(existing_path) = find_event_path(&database.1, &event_id)? {
+        let existing = initialize_database(&existing_path)?;
+        let original_hash: Option<String> = existing.query_row(
+            "SELECT source_package_hash FROM event WHERE id=?1", params![event_id], |row| row.get(0)
+        ).map_err(|e| e.to_string())?;
+        if original_hash.as_deref() != Some(source_package_hash.as_str()) {
+            return Err("Este evento já existe com outro pacote. O histórico original foi preservado.".into());
+        }
+        *connection = existing;
+        return read_state(&connection);
+    }
+    let events_dir = database.1.join("events");
+    std::fs::create_dir_all(&events_dir).map_err(|e| e.to_string())?;
+    let new_path = events_dir.join(format!("{event_id}.db"));
+    let mut imported = initialize_database(&new_path)?;
+    let secret = session_identity::generate_secret()?;
+    let protected_secret = session_identity::protect(&secret)?;
+    let session_public_key = hex::encode(SigningKey::from_bytes(&secret).verifying_key().to_bytes());
+    let tx = imported.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO event(id,name,status,list_hash,prizes_hash,source_package_hash,export_nonce,session_public_key,protected_session_secret) VALUES(?1,?2,'CONFERIDO',?3,?4,?5,?6,?7,?8)",
         params![
@@ -163,6 +178,7 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
         &serde_json::json!({"listHash":list_hash,"prizesHash":prizes_hash,"packageHash":package.package_hash,"sessionPublicKey":session_public_key}).to_string(),
     )?;
     tx.commit().map_err(|e| e.to_string())?;
+    *connection = imported;
     read_state(&connection)
 }
 
@@ -181,6 +197,15 @@ fn get_event_state(database: State<'_, Database>) -> Result<Option<EventState>, 
 
 #[tauri::command]
 fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventState, String> {
+    if input.contest == 0 || input.contest > 9_007_199_254_740_991 {
+        return Err("Informe um número de concurso inteiro maior que zero e dentro do limite permitido.".into());
+    }
+    for (index, number) in input.numbers.iter().enumerate() {
+        if *number > 999_999 {
+            return Err(format!("O {}º número deve estar entre 0 e 999999.", index + 1));
+        }
+    }
+
     let mut connection = database
         .0
         .lock()
@@ -308,6 +333,10 @@ fn mark_absent(sequence: i64, database: State<'_, Database>) -> Result<(), Strin
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
+    let state = read_state(&connection)?;
+    if state.status != "LACRADO" && state.status != "EM_SORTEIO" {
+        return Err("O evento não permite registrar ausência nesta etapa.".into());
+    }
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     let changed = tx
         .execute(
@@ -333,6 +362,11 @@ fn finish_event(database: State<'_, Database>) -> Result<EventState, String> {
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
+    let state = read_state(&connection)?;
+    if state.status == "FINALIZADO" { return Ok(state); }
+    if state.status != "LACRADO" && state.status != "EM_SORTEIO" {
+        return Err("O evento precisa estar lacrado para finalizar.".into());
+    }
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     let remaining: i64 = tx.query_row("SELECT COUNT(*) FROM prize WHERE position NOT IN (SELECT prize_position FROM draw WHERE status='VALID')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
     if remaining != 0 {
@@ -421,11 +455,13 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             app.manage(Database(Mutex::new(
                 initialize_database(&data_dir.join("sorteio.db")).map_err(std::io::Error::other)?,
-            )));
+            ), data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             import_package,
+            list_events,
+            select_event,
             get_event_state,
             seal_event,
             draw_next,
@@ -436,4 +472,58 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("falha ao iniciar SINTUFCE Sorteios Offline");
+}
+
+
+fn event_paths(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    let legacy = directory.join("sorteio.db");
+    if legacy.is_file() { paths.push(legacy); }
+    let events = directory.join("events");
+    if events.exists() {
+        for entry in std::fs::read_dir(events).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().and_then(|x| x.to_str()) == Some("db") { paths.push(path); }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn inspect_event(path: &Path) -> Result<Option<EventState>, String> {
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("Não foi possível abrir o histórico {}: {e}", path.display()))?;
+    match read_state(&connection) {
+        Ok(state) => Ok(Some(state)),
+        Err(message) if message == "NO_EVENT" => Ok(None),
+        Err(message) => Err(format!("Não foi possível ler o histórico {}: {message}", path.display())),
+    }
+}
+
+fn find_event_path(directory: &Path, event_id: &str) -> Result<Option<PathBuf>, String> {
+    for path in event_paths(directory)? {
+        if inspect_event(&path)?.is_some_and(|state| state.id == event_id) { return Ok(Some(path)); }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+fn list_events(database: State<'_, Database>) -> Result<Vec<EventState>, String> {
+    let _guard = database.0.lock().map_err(|_| "Banco local indisponível".to_string())?;
+    let mut events = Vec::new();
+    for path in event_paths(&database.1)? {
+        if let Some(state) = inspect_event(&path)? { events.push(state); }
+    }
+    events.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(events)
+}
+
+#[tauri::command]
+fn select_event(event_id: String, database: State<'_, Database>) -> Result<EventState, String> {
+    let mut connection = database.0.lock().map_err(|_| "Banco local indisponível".to_string())?;
+    let path = find_event_path(&database.1, &event_id)?.ok_or("Evento não encontrado no computador.")?;
+    let selected = initialize_database(&path)?;
+    let state = read_state(&selected)?;
+    *connection = selected;
+    Ok(state)
 }
