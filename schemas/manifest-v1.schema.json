@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sintufce.org.br/sorteios/manifest-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["formatVersion", "eventId", "eventName", "closedAt", "eligibleCount", "prizeCount", "files"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventName": { "type": "string", "minLength": 3 },
+    "closedAt": { "type": "string", "format": "date-time" },
+    "eligibleCount": { "type": "integer", "minimum": 1 },
+    "prizeCount": { "type": "integer", "minimum": 1 },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elegiveis.csv", "premios.csv"],
+      "properties": {
+        "elegiveis.csv": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "premios.csv": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}
