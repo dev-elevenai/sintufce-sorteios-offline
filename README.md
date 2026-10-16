@@ -16,7 +16,7 @@ formal do aplicativo offline.
 - `apps/desktop`: interface Windows em Tauri.
 
 O protocolo de alto rigor está em
-[`docs/architecture/ALGORITHM-v1.md`](docs/architecture/ALGORITHM-v1.md).
+[`docs/architecture/ALGORITHM-v2.md`](docs/architecture/ALGORITHM-v2.md).
 
 Dependências para operação e compilação estão em
 [`docs/DEPENDENCIAS.md`](docs/DEPENDENCIAS.md).

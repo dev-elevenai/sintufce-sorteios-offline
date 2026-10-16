@@ -1,6 +1,6 @@
 use clap::Parser;
 use sintufce_sorteio_core::{
-    audit::{AuditEntry, verify_audit_chain},
+    audit::{verify_audit_chain, AuditEntry},
     package::PackageValidator,
 };
 use std::{
@@ -55,7 +55,7 @@ fn verify_report(path: &Path) -> Result<serde_json::Value, String> {
     let report: serde_json::Value =
         serde_json::from_reader(File::open(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    if report.get("protocol").and_then(|x| x.as_str()) != Some("SINTUFCE-DRAW-V1") {
+    if report.get("protocol").and_then(|x| x.as_str()) != Some("SINTUFCE-DRAW-V2") {
         return Err("Versão de protocolo inválida.".into());
     }
     if report.pointer("/event/status").and_then(|x| x.as_str()) != Some("FINALIZADO") {

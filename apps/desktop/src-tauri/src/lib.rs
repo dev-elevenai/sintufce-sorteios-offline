@@ -1,16 +1,15 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sintufce_sorteio_core::{
     draw_v1::{
-        AuditorReveal, DrawInput, EligibleIdentity, FederalResult, PrizeIdentity,
-        auditor_commitment, canonical_eligible_hash, canonical_prize_hash, draw_proof,
+        canonical_eligible_hash, canonical_prize_hash, draw_proof, DrawInput, EligibleIdentity,
+        FederalResult, PrizeIdentity,
     },
     package::PackageValidator,
 };
 use std::{fs::File, sync::Mutex};
 use tauri::{Manager, State};
-use uuid::Uuid;
 
 struct Database(Mutex<Connection>);
 
@@ -26,7 +25,6 @@ struct EventState {
     list_hash: String,
     prizes_hash: String,
     seed_hash: Option<String>,
-    auditor_commitments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,13 +32,6 @@ struct EventState {
 struct SealInput {
     contest: u64,
     numbers: [u32; 5],
-    auditor_secrets: [String; 3],
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CommitInput {
-    auditor_secrets: [String; 3],
 }
 
 #[derive(Debug, Serialize)]
@@ -143,96 +134,21 @@ fn get_event_state(database: State<'_, Database>) -> Result<Option<EventState>, 
 }
 
 #[tauri::command]
-fn commit_auditors(
-    input: CommitInput,
-    database: State<'_, Database>,
-) -> Result<EventState, String> {
-    let mut connection = database
-        .0
-        .lock()
-        .map_err(|_| "Banco local indisponível".to_string())?;
-    let state = read_state(&connection)?;
-    if state.status != "CONFERIDO" {
-        return Err("Os compromissos já foram registrados.".into());
-    }
-    let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
-    let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let mut commitments = Vec::new();
-    for (index, value) in input.auditor_secrets.iter().enumerate() {
-        let secret = parse_secret(value, index)?;
-        let auditor_id = format!("AUDITOR-{}", index + 1);
-        let commitment = hex::encode(auditor_commitment(event_id, &auditor_id, &secret));
-        commitments.push(commitment.clone());
-        tx.execute(
-            "INSERT INTO auditor_commit(auditor_id,commitment) VALUES(?1,?2)",
-            params![auditor_id, commitment],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    tx.execute("UPDATE event SET status='COMPROMETIDO'", [])
-        .map_err(|e| e.to_string())?;
-    append_audit(
-        &tx,
-        "AUDITOR_COMMITMENTS_REGISTERED",
-        &serde_json::json!({"commitments":commitments}).to_string(),
-    )?;
-    tx.commit().map_err(|e| e.to_string())?;
-    read_state(&connection)
-}
-
-#[tauri::command]
 fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventState, String> {
     let mut connection = database
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
     let state = read_state(&connection)?;
-    if state.status != "COMPROMETIDO" {
+    if state.status != "CONFERIDO" {
         return Err("O evento não está disponível para lacre.".into());
     }
-    let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
-    let mut reveals = Vec::new();
-    for (index, value) in input.auditor_secrets.iter().enumerate() {
-        let secret = parse_secret(value, index)?;
-        let auditor_id = format!("AUDITOR-{}", index + 1);
-        let commitment = auditor_commitment(event_id, &auditor_id, &secret);
-        let expected: String = connection
-            .query_row(
-                "SELECT commitment FROM auditor_commit WHERE auditor_id=?1",
-                params![auditor_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| format!("Compromisso do auditor {} ausente.", index + 1))?;
-        if hex::encode(commitment) != expected {
-            return Err(format!(
-                "Segredo do auditor {} não corresponde ao compromisso.",
-                index + 1
-            ));
-        }
-        reveals.push(AuditorReveal {
-            commitment,
-            auditor_id,
-            secret,
-        });
-    }
-    let list_hash: [u8; 32] = hex::decode(&state.list_hash)
-        .map_err(|e| e.to_string())?
-        .try_into()
-        .map_err(|_| "Hash da lista inválido")?;
-    let prizes_hash: [u8; 32] = hex::decode(&state.prizes_hash)
-        .map_err(|e| e.to_string())?
-        .try_into()
-        .map_err(|_| "Hash dos prêmios inválido")?;
     let proof = draw_proof(
         &DrawInput {
-            event_id,
-            list_hash,
-            prizes_hash,
             federal: FederalResult {
                 contest: input.contest,
                 numbers: input.numbers,
             },
-            auditor_reveals: reveals,
         },
         state.eligible_count as usize,
     )
@@ -247,7 +163,7 @@ fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventSt
         ],
     )
     .map_err(|e| e.to_string())?;
-    append_audit(&tx, "EVENT_SEALED", &serde_json::json!({"algorithm":"SINTUFCE-DRAW-V1","seedHash":hex::encode(proof.seed_hash)}).to_string())?;
+    append_audit(&tx, "EVENT_SEALED", &serde_json::json!({"algorithm":"SINTUFCE-DRAW-V2","contest":input.contest,"federalNumbers":input.numbers,"federalKey":proof.federal_key,"seedHash":hex::encode(proof.seed_hash)}).to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     read_state(&connection)
 }
@@ -357,7 +273,7 @@ fn mark_absent(sequence: i64, database: State<'_, Database>) -> Result<(), Strin
     append_audit(
         &tx,
         "DRAW_ABSENT",
-        &serde_json::json!({"sequence":sequence}).to_string(),
+        &serde_json::json!({ "sequence": sequence }).to_string(),
     )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -395,22 +311,14 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
     let mut audit_statement = connection.prepare("SELECT sequence,kind,payload,previous_hash,hash,created_at FROM audit ORDER BY sequence").map_err(|e| e.to_string())?;
     let audit = audit_statement.query_map([], |r| Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"payload":r.get::<_,String>(2)?,"previousHash":r.get::<_,String>(3)?,"hash":r.get::<_,String>(4)?,"createdAt":r.get::<_,String>(5)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
     let report = serde_json::to_vec_pretty(
-        &serde_json::json!({"protocol":"SINTUFCE-DRAW-V1","event":state,"draws":rows,"audit":audit}),
+        &serde_json::json!({"protocol":"SINTUFCE-DRAW-V2","event":state,"draws":rows,"audit":audit}),
     )
     .map_err(|e| e.to_string())?;
     std::fs::write(path, report).map_err(|e| e.to_string())
 }
 
 fn read_state(connection: &Connection) -> Result<EventState, String> {
-    let mut state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)?,auditor_commitments:Vec::new() })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
-    let mut statement = connection
-        .prepare("SELECT commitment FROM auditor_commit ORDER BY auditor_id")
-        .map_err(|e| e.to_string())?;
-    state.auditor_commitments = statement
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(|e| e.to_string())?;
+    let mut state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)? })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
     Ok(state)
 }
 
@@ -439,14 +347,6 @@ fn append_audit(connection: &Connection, kind: &str, payload: &str) -> Result<()
     Ok(())
 }
 
-fn parse_secret(value: &str, index: usize) -> Result<[u8; 32], String> {
-    let bytes =
-        hex::decode(value.trim()).map_err(|_| format!("Segredo {} inválido.", index + 1))?;
-    bytes
-        .try_into()
-        .map_err(|_| format!("Segredo {} deve ter 32 bytes.", index + 1))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -462,7 +362,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             import_package,
             get_event_state,
-            commit_auditors,
             seal_event,
             draw_next,
             list_draws,

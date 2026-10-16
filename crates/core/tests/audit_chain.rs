@@ -1,4 +1,4 @@
-use sintufce_sorteio_core::audit::{AuditEntry, audit_hash, verify_audit_chain};
+use sintufce_sorteio_core::audit::{audit_hash, verify_audit_chain, AuditEntry};
 
 #[test]
 fn valida_cadeia_integra_e_rejeita_payload_alterado() {
