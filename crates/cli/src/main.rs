@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use sintufce_sorteio_core::package::PackageValidator;
+use sintufce_sorteio_core::package::{PackageValidator, TrustedKeys};
 use std::{fs::File, path::PathBuf, process::ExitCode};
 
 #[derive(Parser)]
@@ -32,7 +32,13 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::PackageInspect { package } => {
-            let validated = PackageValidator::validate_reader(File::open(package)?)?;
+            let key: [u8; 32] =
+                hex::decode("8f2ead5257bb7b9ae1e2345256fbdc461aac967db63499e3dab60e6750e9d4a6")?
+                    .try_into()
+                    .map_err(|_| "chave pública inválida")?;
+            let keys = TrustedKeys::from([("sintufce-prod-2026-01".to_owned(), key)]);
+            let validated =
+                PackageValidator::validate_reader_with_keys(File::open(package)?, &keys)?;
             println!(
                 "{}",
                 serde_json::json!({

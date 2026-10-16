@@ -1,18 +1,30 @@
-use rusqlite::{Connection, params};
+mod session_identity;
+
+use ed25519_dalek::SigningKey;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sintufce_sorteio_core::{
     draw_v1::{
-        AuditorReveal, DrawInput, EligibleIdentity, FederalResult, PrizeIdentity,
-        auditor_commitment, canonical_eligible_hash, canonical_prize_hash, draw_proof,
+        canonical_eligible_hash, canonical_prize_hash, draw_proof, DrawInput, EligibleIdentity,
+        FederalResult, PrizeIdentity,
     },
-    package::PackageValidator,
+    package::{PackageValidator, TrustedKeys},
+    result_package::{DrawRecord, ResultManifest, ResultPackageBuilder, ResultPayload},
 };
-use std::{fs::File, sync::Mutex};
+use std::{collections::HashMap, fs::File, sync::Mutex};
 use tauri::{Manager, State};
-use uuid::Uuid;
 
 struct Database(Mutex<Connection>);
+
+const ONLINE_KEY_ID: &str = "sintufce-prod-2026-01";
+const ONLINE_PUBLIC_KEY_HEX: &str = "8f2ead5257bb7b9ae1e2345256fbdc461aac967db63499e3dab60e6750e9d4a6";
+
+fn trusted_online_keys() -> Result<TrustedKeys, String> {
+    let bytes = hex::decode(ONLINE_PUBLIC_KEY_HEX).map_err(|_| "Chave pública online inválida".to_string())?;
+    let key: [u8; 32] = bytes.try_into().map_err(|_| "Chave pública online inválida".to_string())?;
+    Ok(HashMap::from([(ONLINE_KEY_ID.to_owned(), key)]))
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +38,6 @@ struct EventState {
     list_hash: String,
     prizes_hash: String,
     seed_hash: Option<String>,
-    auditor_commitments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,13 +45,6 @@ struct EventState {
 struct SealInput {
     contest: u64,
     numbers: [u32; 5],
-    auditor_secrets: [String; 3],
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CommitInput {
-    auditor_secrets: [String; 3],
 }
 
 #[derive(Debug, Serialize)]
@@ -64,12 +68,36 @@ fn initialize_database(path: &std::path::Path) -> Result<Connection, String> {
       CREATE TABLE IF NOT EXISTS draw(sequence INTEGER PRIMARY KEY,eligible_uuid TEXT NOT NULL UNIQUE,prize_position INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'VALID',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE IF NOT EXISTS audit(sequence INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,payload TEXT NOT NULL,previous_hash TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);")
         .map_err(|e| e.to_string())?;
+    for (name, definition) in [
+        ("source_package_hash", "TEXT"),
+        ("export_nonce", "TEXT"),
+        ("session_public_key", "TEXT"),
+        ("protected_session_secret", "BLOB"),
+        ("federal_contest", "INTEGER"),
+        ("federal_numbers", "TEXT"),
+    ] {
+        add_event_column(&connection, name, definition)?;
+    }
     Ok(connection)
+}
+
+fn add_event_column(connection: &Connection, name: &str, definition: &str) -> Result<(), String> {
+    let mut statement = connection.prepare("PRAGMA table_info(event)").map_err(|error| error.to_string())?;
+    let exists = statement.query_map([], |row| row.get::<_, String>(1)).map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?
+        .iter().any(|column| column == name);
+    if !exists {
+        connection.execute_batch(&format!("ALTER TABLE event ADD COLUMN {name} {definition}")).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn import_package(path: String, database: State<'_, Database>) -> Result<EventState, String> {
-    let package = PackageValidator::validate_reader(File::open(path).map_err(|e| e.to_string())?)
+    let package = PackageValidator::validate_reader_with_keys(
+        File::open(path).map_err(|e| e.to_string())?,
+        &trusted_online_keys()?,
+    )
         .map_err(|e| e.to_string())?;
     let identities: Vec<_> = package
         .eligibles
@@ -90,6 +118,11 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
         .collect();
     let list_hash = hex::encode(canonical_eligible_hash(&identities));
     let prizes_hash = hex::encode(canonical_prize_hash(&prize_ids));
+    let secret = session_identity::generate_secret()?;
+    let protected_secret = session_identity::protect(&secret)?;
+    let session_public_key = hex::encode(SigningKey::from_bytes(&secret).verifying_key().to_bytes());
+    let export_nonce = package.manifest.export_nonce.clone().ok_or("Pacote sem nonce de exportação")?;
+    let source_package_hash = package.package_hash.clone();
     let mut connection = database
         .0
         .lock()
@@ -97,12 +130,16 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     tx.execute_batch("DELETE FROM draw;DELETE FROM audit;DELETE FROM auditor_commit;DELETE FROM eligible;DELETE FROM prize;DELETE FROM event;").map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO event(id,name,status,list_hash,prizes_hash) VALUES(?1,?2,'CONFERIDO',?3,?4)",
+        "INSERT INTO event(id,name,status,list_hash,prizes_hash,source_package_hash,export_nonce,session_public_key,protected_session_secret) VALUES(?1,?2,'CONFERIDO',?3,?4,?5,?6,?7,?8)",
         params![
             package.manifest.event_id.to_string(),
             package.manifest.event_name,
             list_hash,
-            prizes_hash
+            prizes_hash,
+            source_package_hash,
+            export_nonce,
+            session_public_key,
+            protected_secret,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -123,7 +160,7 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
     append_audit(
         &tx,
         "PACKAGE_IMPORTED",
-        &serde_json::json!({"listHash":list_hash,"prizesHash":prizes_hash}).to_string(),
+        &serde_json::json!({"listHash":list_hash,"prizesHash":prizes_hash,"packageHash":package.package_hash,"sessionPublicKey":session_public_key}).to_string(),
     )?;
     tx.commit().map_err(|e| e.to_string())?;
     read_state(&connection)
@@ -143,111 +180,38 @@ fn get_event_state(database: State<'_, Database>) -> Result<Option<EventState>, 
 }
 
 #[tauri::command]
-fn commit_auditors(
-    input: CommitInput,
-    database: State<'_, Database>,
-) -> Result<EventState, String> {
-    let mut connection = database
-        .0
-        .lock()
-        .map_err(|_| "Banco local indisponível".to_string())?;
-    let state = read_state(&connection)?;
-    if state.status != "CONFERIDO" {
-        return Err("Os compromissos já foram registrados.".into());
-    }
-    let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
-    let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let mut commitments = Vec::new();
-    for (index, value) in input.auditor_secrets.iter().enumerate() {
-        let secret = parse_secret(value, index)?;
-        let auditor_id = format!("AUDITOR-{}", index + 1);
-        let commitment = hex::encode(auditor_commitment(event_id, &auditor_id, &secret));
-        commitments.push(commitment.clone());
-        tx.execute(
-            "INSERT INTO auditor_commit(auditor_id,commitment) VALUES(?1,?2)",
-            params![auditor_id, commitment],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    tx.execute("UPDATE event SET status='COMPROMETIDO'", [])
-        .map_err(|e| e.to_string())?;
-    append_audit(
-        &tx,
-        "AUDITOR_COMMITMENTS_REGISTERED",
-        &serde_json::json!({"commitments":commitments}).to_string(),
-    )?;
-    tx.commit().map_err(|e| e.to_string())?;
-    read_state(&connection)
-}
-
-#[tauri::command]
 fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventState, String> {
     let mut connection = database
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
     let state = read_state(&connection)?;
-    if state.status != "COMPROMETIDO" {
+    if state.status != "CONFERIDO" {
         return Err("O evento não está disponível para lacre.".into());
     }
-    let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
-    let mut reveals = Vec::new();
-    for (index, value) in input.auditor_secrets.iter().enumerate() {
-        let secret = parse_secret(value, index)?;
-        let auditor_id = format!("AUDITOR-{}", index + 1);
-        let commitment = auditor_commitment(event_id, &auditor_id, &secret);
-        let expected: String = connection
-            .query_row(
-                "SELECT commitment FROM auditor_commit WHERE auditor_id=?1",
-                params![auditor_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| format!("Compromisso do auditor {} ausente.", index + 1))?;
-        if hex::encode(commitment) != expected {
-            return Err(format!(
-                "Segredo do auditor {} não corresponde ao compromisso.",
-                index + 1
-            ));
-        }
-        reveals.push(AuditorReveal {
-            commitment,
-            auditor_id,
-            secret,
-        });
-    }
-    let list_hash: [u8; 32] = hex::decode(&state.list_hash)
-        .map_err(|e| e.to_string())?
-        .try_into()
-        .map_err(|_| "Hash da lista inválido")?;
-    let prizes_hash: [u8; 32] = hex::decode(&state.prizes_hash)
-        .map_err(|e| e.to_string())?
-        .try_into()
-        .map_err(|_| "Hash dos prêmios inválido")?;
     let proof = draw_proof(
         &DrawInput {
-            event_id,
-            list_hash,
-            prizes_hash,
             federal: FederalResult {
                 contest: input.contest,
                 numbers: input.numbers,
             },
-            auditor_reveals: reveals,
         },
         state.eligible_count as usize,
     )
     .map_err(|e| e.to_string())?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     tx.execute(
-        "UPDATE event SET status='LACRADO',seed_hash=?1,permutation=?2,next_index=0 WHERE id=?3",
+        "UPDATE event SET status='LACRADO',seed_hash=?1,permutation=?2,next_index=0,federal_contest=?4,federal_numbers=?5 WHERE id=?3",
         params![
             hex::encode(proof.seed_hash),
             serde_json::to_string(&proof.permutation).unwrap(),
-            state.id
+            state.id,
+            input.contest as i64,
+            serde_json::to_string(&input.numbers).unwrap(),
         ],
     )
     .map_err(|e| e.to_string())?;
-    append_audit(&tx, "EVENT_SEALED", &serde_json::json!({"algorithm":"SINTUFCE-DRAW-V1","seedHash":hex::encode(proof.seed_hash)}).to_string())?;
+    append_audit(&tx, "EVENT_SEALED", &serde_json::json!({"algorithm":"SINTUFCE-DRAW-V2","contest":input.contest,"federalNumbers":input.numbers,"federalKey":proof.federal_key,"seedHash":hex::encode(proof.seed_hash)}).to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     read_state(&connection)
 }
@@ -357,7 +321,7 @@ fn mark_absent(sequence: i64, database: State<'_, Database>) -> Result<(), Strin
     append_audit(
         &tx,
         "DRAW_ABSENT",
-        &serde_json::json!({"sequence":sequence}).to_string(),
+        &serde_json::json!({ "sequence": sequence }).to_string(),
     )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
@@ -390,27 +354,36 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
     let state = read_state(&connection)?;
-    let mut statement = connection.prepare("SELECT d.sequence,d.status,e.ticket,e.uuid,e.name,e.siape,p.position,p.name,d.created_at FROM draw d JOIN eligible e ON e.uuid=d.eligible_uuid JOIN prize p ON p.position=d.prize_position ORDER BY d.sequence").map_err(|e| e.to_string())?;
-    let rows = statement.query_map([], |r| Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"ticket":r.get::<_,String>(2)?,"uuid":r.get::<_,String>(3)?,"name":r.get::<_,String>(4)?,"siape":r.get::<_,String>(5)?,"prizeOrder":r.get::<_,i64>(6)?,"prize":r.get::<_,String>(7)?,"createdAt":r.get::<_,String>(8)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
-    let mut audit_statement = connection.prepare("SELECT sequence,kind,payload,previous_hash,hash,created_at FROM audit ORDER BY sequence").map_err(|e| e.to_string())?;
-    let audit = audit_statement.query_map([], |r| Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"payload":r.get::<_,String>(2)?,"previousHash":r.get::<_,String>(3)?,"hash":r.get::<_,String>(4)?,"createdAt":r.get::<_,String>(5)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
-    let report = serde_json::to_vec_pretty(
-        &serde_json::json!({"protocol":"SINTUFCE-DRAW-V1","event":state,"draws":rows,"audit":audit}),
-    )
-    .map_err(|e| e.to_string())?;
-    std::fs::write(path, report).map_err(|e| e.to_string())
+    if state.status != "FINALIZADO" { return Err("Finalize o evento antes de exportar o resultado.".into()); }
+    let (source_hash, export_nonce, protected_secret, contest, numbers_json): (String, String, Vec<u8>, i64, String) = connection.query_row(
+        "SELECT source_package_hash,export_nonce,protected_session_secret,federal_contest,federal_numbers FROM event LIMIT 1", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).map_err(|error| error.to_string())?;
+    let secret = session_identity::unprotect(&protected_secret)?;
+    let numbers: [u32; 5] = serde_json::from_str(&numbers_json).map_err(|error| error.to_string())?;
+    let participants = connection.prepare("SELECT uuid FROM eligible ORDER BY uuid").map_err(|e| e.to_string())?
+        .query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        .into_iter().map(|uuid| uuid.parse::<uuid::Uuid>().map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    let prize_orders = connection.prepare("SELECT position FROM prize ORDER BY position").map_err(|e| e.to_string())?
+        .query_map([], |row| row.get::<_, u32>(0)).map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut draw_statement = connection.prepare("SELECT d.sequence,e.uuid,p.position,d.status,d.created_at FROM draw d JOIN eligible e ON e.uuid=d.eligible_uuid JOIN prize p ON p.position=d.prize_position ORDER BY d.sequence").map_err(|e| e.to_string())?;
+    let draws = draw_statement.query_map([], |row| {
+        let called_at: String = row.get(4)?;
+        Ok(DrawRecord { sequence: row.get::<_, u32>(0)?, eligible_uuid: row.get::<_, String>(1)?.parse().unwrap(), prize_order: row.get(2)?, status: row.get(3)?, called_at: format!("{}Z", called_at.replace(' ', "T")) })
+    }).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut audit_statement = connection.prepare("SELECT sequence,kind,payload,previous_hash,hash FROM audit ORDER BY sequence").map_err(|e| e.to_string())?;
+    let audit = audit_statement.query_map([], |row| Ok(sintufce_sorteio_core::audit::AuditEntry { sequence: row.get::<_, i64>(0)? as u64, kind: row.get(1)?, payload: row.get(2)?, previous_hash: row.get(3)?, hash: row.get(4)? }))
+        .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let payload = ResultPayload { participants, prize_orders, federal: FederalResult { contest: contest as u64, numbers }, seed_hash: state.seed_hash.clone().ok_or("Evento sem semente")?, draws };
+    let manifest = ResultManifest::new(state.id.parse().map_err(|e: uuid::Error| e.to_string())?, export_nonce, source_hash, state.list_hash, state.prizes_hash);
+    let package = ResultPackageBuilder::build(manifest, payload, audit, &secret).map_err(|e| e.to_string())?;
+    std::fs::write(path, package).map_err(|e| e.to_string())
 }
 
 fn read_state(connection: &Connection) -> Result<EventState, String> {
-    let mut state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)?,auditor_commitments:Vec::new() })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
-    let mut statement = connection
-        .prepare("SELECT commitment FROM auditor_commit ORDER BY auditor_id")
-        .map_err(|e| e.to_string())?;
-    state.auditor_commitments = statement
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<String>, _>>()
-        .map_err(|e| e.to_string())?;
+    let state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)? })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
     Ok(state)
 }
 
@@ -439,14 +412,6 @@ fn append_audit(connection: &Connection, kind: &str, payload: &str) -> Result<()
     Ok(())
 }
 
-fn parse_secret(value: &str, index: usize) -> Result<[u8; 32], String> {
-    let bytes =
-        hex::decode(value.trim()).map_err(|_| format!("Segredo {} inválido.", index + 1))?;
-    bytes
-        .try_into()
-        .map_err(|_| format!("Segredo {} deve ter 32 bytes.", index + 1))
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -462,7 +427,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             import_package,
             get_event_state,
-            commit_auditors,
             seal_event,
             draw_next,
             list_draws,

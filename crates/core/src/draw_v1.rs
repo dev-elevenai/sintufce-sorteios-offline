@@ -2,17 +2,15 @@ use chacha20::{
     ChaCha20,
     cipher::{KeyIvInit, StreamCipher},
 };
-use hkdf::Hkdf;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 const COMMIT_DOMAIN: &[u8] = b"SINTUFCE/AUDITOR-COMMIT/V1\0";
-const SALT_DOMAIN: &[u8] = b"SINTUFCE/SALT/V1\0";
-const NONCE_DOMAIN: &[u8] = b"SINTUFCE/NONCE/V1\0";
-const HKDF_INFO: &[u8] = b"SINTUFCE/DRAW/V1";
+const SEED_DOMAIN: &[u8] = b"SINTUFCE/FEDERAL-SHUFFLE/V2\0";
+const NONCE_DOMAIN: &[u8] = b"SINTUFCE/NONCE/V2\0";
 const ELIGIBLES_DOMAIN: &[u8] = b"SINTUFCE/ELIGIBLES/V1\0";
 const PRIZES_DOMAIN: &[u8] = b"SINTUFCE/PRIZES/V1\0";
 
@@ -29,7 +27,7 @@ pub struct PrizeIdentity {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct FederalResult {
     pub contest: u64,
     pub numbers: [u32; 5],
@@ -44,17 +42,14 @@ pub struct AuditorReveal {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrawInput {
-    pub event_id: Uuid,
-    pub list_hash: [u8; 32],
-    pub prizes_hash: [u8; 32],
     pub federal: FederalResult,
-    pub auditor_reveals: Vec<AuditorReveal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrawProof {
     pub algorithm_version: &'static str,
     pub seed_hash: [u8; 32],
+    pub federal_key: String,
     pub permutation: Vec<usize>,
 }
 
@@ -130,32 +125,9 @@ pub fn draw_proof(
     if input.federal.contest == 0 || input.federal.numbers.iter().any(|number| *number > 999_999) {
         return Err(DrawProtocolError::InvalidFederalResult);
     }
-    if input.auditor_reveals.len() != 3 {
-        return Err(DrawProtocolError::InsufficientAuditors);
-    }
-
-    let mut reveals = input.auditor_reveals.clone();
-    reveals.sort_by(|a, b| a.auditor_id.as_bytes().cmp(b.auditor_id.as_bytes()));
-    let mut auditor_ids = HashSet::new();
-    for reveal in &reveals {
-        if !auditor_ids.insert(reveal.auditor_id.clone()) {
-            return Err(DrawProtocolError::DuplicateAuditor(
-                reveal.auditor_id.clone(),
-            ));
-        }
-        let expected = auditor_commitment(input.event_id, &reveal.auditor_id, &reveal.secret);
-        if expected != reveal.commitment {
-            return Err(DrawProtocolError::CommitmentMismatch {
-                auditor_id: reveal.auditor_id.clone(),
-            });
-        }
-    }
-
-    let seed = derive_seed(input, &reveals);
-    let nonce_digest = Sha256::new()
-        .chain_update(NONCE_DOMAIN)
-        .chain_update(input.event_id.as_bytes())
-        .finalize();
+    let federal_key = federal_shuffle_key(&input.federal)?;
+    let seed = derive_seed(&federal_key);
+    let nonce_digest = Sha256::new().chain_update(NONCE_DOMAIN).finalize();
     let mut nonce = [0_u8; 12];
     nonce.copy_from_slice(&nonce_digest[..12]);
 
@@ -166,45 +138,30 @@ pub fn draw_proof(
         permutation.swap(last, selected);
     }
     Ok(DrawProof {
-        algorithm_version: "SINTUFCE-DRAW-V1",
+        algorithm_version: "SINTUFCE-DRAW-V2",
         seed_hash: Sha256::digest(seed).into(),
+        federal_key,
         permutation,
     })
 }
 
-fn derive_seed(input: &DrawInput, reveals: &[AuditorReveal]) -> [u8; 32] {
-    let salt: [u8; 32] = Sha256::new()
-        .chain_update(SALT_DOMAIN)
-        .chain_update(input.event_id.as_bytes())
-        .chain_update(input.list_hash)
-        .chain_update(input.prizes_hash)
+fn derive_seed(federal_key: &str) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(SEED_DOMAIN)
+        .chain_update(federal_key.as_bytes())
         .finalize()
-        .into();
-
-    let mut input_material = federal_canonical(&input.federal).into_bytes();
-    for reveal in reveals {
-        input_material.extend_from_slice(&(reveal.auditor_id.len() as u32).to_be_bytes());
-        input_material.extend_from_slice(reveal.auditor_id.as_bytes());
-        input_material.extend_from_slice(&reveal.secret);
-    }
-
-    let hkdf = Hkdf::<Sha256>::new(Some(&salt), &input_material);
-    let mut seed = [0_u8; 32];
-    hkdf.expand(HKDF_INFO, &mut seed)
-        .expect("32 bytes sempre cabem na saída HKDF-SHA-256");
-    seed
+        .into()
 }
 
-fn federal_canonical(result: &FederalResult) -> String {
-    format!(
-        "FEDERAL|{:010}|{:06}|{:06}|{:06}|{:06}|{:06}",
-        result.contest,
-        result.numbers[0],
-        result.numbers[1],
-        result.numbers[2],
-        result.numbers[3],
-        result.numbers[4]
-    )
+pub fn federal_shuffle_key(result: &FederalResult) -> Result<String, DrawProtocolError> {
+    if result.contest == 0 || result.numbers.iter().any(|number| *number > 999_999) {
+        return Err(DrawProtocolError::InvalidFederalResult);
+    }
+    Ok(result
+        .numbers
+        .iter()
+        .map(|number| format!("{:03}", number % 1_000))
+        .collect::<String>())
 }
 
 fn update_sized_text(digest: &mut Sha256, value: &str) {
