@@ -26,6 +26,7 @@ struct EventState {
     list_hash: String,
     prizes_hash: String,
     seed_hash: Option<String>,
+    auditor_commitments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,10 +157,12 @@ fn commit_auditors(
     }
     let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let mut commitments = Vec::new();
     for (index, value) in input.auditor_secrets.iter().enumerate() {
         let secret = parse_secret(value, index)?;
         let auditor_id = format!("AUDITOR-{}", index + 1);
         let commitment = hex::encode(auditor_commitment(event_id, &auditor_id, &secret));
+        commitments.push(commitment.clone());
         tx.execute(
             "INSERT INTO auditor_commit(auditor_id,commitment) VALUES(?1,?2)",
             params![auditor_id, commitment],
@@ -168,7 +171,11 @@ fn commit_auditors(
     }
     tx.execute("UPDATE event SET status='COMPROMETIDO'", [])
         .map_err(|e| e.to_string())?;
-    append_audit(&tx, "AUDITOR_COMMITMENTS_REGISTERED", "{}")?;
+    append_audit(
+        &tx,
+        "AUDITOR_COMMITMENTS_REGISTERED",
+        &serde_json::json!({"commitments":commitments}).to_string(),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     read_state(&connection)
 }
@@ -395,7 +402,16 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
 }
 
 fn read_state(connection: &Connection) -> Result<EventState, String> {
-    connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)? })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})
+    let mut state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)?,auditor_commitments:Vec::new() })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
+    let mut statement = connection
+        .prepare("SELECT commitment FROM auditor_commit ORDER BY auditor_id")
+        .map_err(|e| e.to_string())?;
+    state.auditor_commitments = statement
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(state)
 }
 
 fn append_audit(connection: &Connection, kind: &str, payload: &str) -> Result<(), String> {
