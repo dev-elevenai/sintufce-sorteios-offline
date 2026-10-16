@@ -9,6 +9,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 [dependencies]
+hex = "0.4"
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+uuid = "1"
 sintufce-sorteio-core = { path = "../../../crates/core" }
 [workspace]

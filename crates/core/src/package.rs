@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -11,7 +11,7 @@ use zip::ZipArchive;
 const REQUIRED_FILES: [&str; 3] = ["manifest.json", "elegiveis.csv", "premios.csv"];
 const OPTIONAL_FILES: [&str; 2] = ["origem.pdf", "assinatura.ed25519"];
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageManifest {
     pub format_version: u16,
@@ -23,7 +23,7 @@ pub struct PackageManifest {
     pub files: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Eligible {
     pub ticket: u64,
     pub uuid: Uuid,
@@ -33,7 +33,7 @@ pub struct Eligible {
     pub situacao_vinculo: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Prize {
     #[serde(rename = "ordem")]
     pub order: u32,
@@ -41,7 +41,7 @@ pub struct Prize {
     pub name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatedPackage {
     pub manifest: PackageManifest,
     pub eligibles: Vec<Eligible>,

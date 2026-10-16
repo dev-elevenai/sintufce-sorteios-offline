@@ -13,4 +13,17 @@ li { display: flex; align-items: center; gap: 12px; padding: 14px; background: #
 li span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #ede2e3; color: #9b111e; font-weight: 800; }
 button { width: 100%; margin-top: 24px; padding: 14px; border: 0; border-radius: 8px; background: #9b111e; color: white; font-weight: 700; }
 button:disabled { opacity: .55; }
+.secondary { background: #ece7df; color: #252a34; }
 small { display: block; margin-top: 10px; color: #707783; text-align: center; }
+.panel { margin-top: 22px; padding: 24px; background: #fff; border: 1px solid #ded8d0; border-radius: 10px; }
+.hero { text-align: center; }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.metrics div { display: grid; padding: 14px; background: #fff; border-radius: 8px; text-align: center; }
+.metrics b { font-size: 24px; } .metrics span { color: #707783; font-size: 12px; }
+label { display: grid; gap: 6px; margin-top: 14px; font-size: 13px; font-weight: 700; }
+input { width: 100%; padding: 10px; border: 1px solid #cfc8be; border-radius: 6px; font: inherit; }
+.numbers { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 12px; }
+details { margin-top: 12px; } code { display: block; overflow-wrap: anywhere; margin-top: 5px; font-size: 11px; }
+.error { margin-top: 18px; padding: 12px; border-radius: 8px; background: #fce8e8; color: #8a1520; }
+.winner { display: grid; gap: 8px; margin: 18px 0; padding: 24px; border: 2px solid #9b111e; border-radius: 10px; text-align: center; }
+.winner span { color: #707783; } .winner strong { font-size: 30px; } .winner small { margin: 0; }
