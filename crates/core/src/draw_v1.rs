@@ -1,6 +1,6 @@
 use chacha20::{
-    cipher::{KeyIvInit, StreamCipher},
     ChaCha20,
+    cipher::{KeyIvInit, StreamCipher},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

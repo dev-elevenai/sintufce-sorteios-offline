@@ -18,11 +18,28 @@ fn assinatura_ed25519_e_vinculada_ao_dominio_e_conteudo() {
     let signature = sign_ed25519(&secret, &message);
 
     assert!(verify_ed25519(public.as_bytes(), &message, &signature).is_ok());
-    assert!(verify_ed25519(public.as_bytes(), &domain_message("SINTUFCE/RESULT/V1", b"manifesto"), &signature).is_err());
-    assert!(verify_ed25519(public.as_bytes(), &domain_message("SINTUFCE/PACKAGE/V2", b"alterado"), &signature).is_err());
+    assert!(
+        verify_ed25519(
+            public.as_bytes(),
+            &domain_message("SINTUFCE/RESULT/V1", b"manifesto"),
+            &signature
+        )
+        .is_err()
+    );
+    assert!(
+        verify_ed25519(
+            public.as_bytes(),
+            &domain_message("SINTUFCE/PACKAGE/V2", b"alterado"),
+            &signature
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn hash_sha256_tem_vetor_estavel() {
-    assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }

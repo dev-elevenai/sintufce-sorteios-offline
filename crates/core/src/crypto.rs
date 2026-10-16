@@ -23,7 +23,8 @@ fn canonical_value(value: &Value) -> Value {
             let mut entries: Vec<_> = object.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
             Value::Object(
-                entries.into_iter()
+                entries
+                    .into_iter()
                     .map(|(key, value)| (key.clone(), canonical_value(value)))
                     .collect(),
             )
@@ -47,7 +48,11 @@ pub fn sign_ed25519(secret: &[u8; 32], message: &[u8]) -> [u8; 64] {
     SigningKey::from_bytes(secret).sign(message).to_bytes()
 }
 
-pub fn verify_ed25519(public: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> Result<(), CryptoError> {
+pub fn verify_ed25519(
+    public: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
     let key = VerifyingKey::from_bytes(public).map_err(|_| CryptoError::InvalidPublicKey)?;
     key.verify(message, &Signature::from_bytes(signature))
         .map_err(|_| CryptoError::InvalidSignature)

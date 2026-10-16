@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use sintufce_sorteio_core::package::{PackageError, PackageValidator};
 use std::io::{Cursor, Write};
-use zip::{write::SimpleFileOptions, ZipWriter};
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 const ELEGIVEIS: &str = "ticket,uuid,nome,siape,situacao_vinculo\n1,550e8400-e29b-41d4-a716-446655440000,Ana Lima,12345,FILIADO\n";
 const PREMIOS: &str = "ordem,premio\n1,Televisão\n";

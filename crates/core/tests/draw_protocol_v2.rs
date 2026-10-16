@@ -1,6 +1,6 @@
 use sintufce_sorteio_core::draw_v1::{
-    canonical_eligible_hash, canonical_prize_hash, draw_proof, federal_shuffle_key, DrawInput,
-    DrawProtocolError, EligibleIdentity, FederalResult, PrizeIdentity,
+    DrawInput, DrawProtocolError, EligibleIdentity, FederalResult, PrizeIdentity,
+    canonical_eligible_hash, canonical_prize_hash, draw_proof, federal_shuffle_key,
 };
 use std::collections::HashSet;
 use uuid::Uuid;
