@@ -54,6 +54,8 @@ pub enum DrawProtocolError {
     CommitmentMismatch { auditor_id: String },
     #[error("a lista de elegíveis está vazia")]
     EmptyEligibleList,
+    #[error("resultado da Loteria Federal fora do formato permitido")]
+    InvalidFederalResult,
 }
 
 pub fn auditor_commitment(event_id: Uuid, auditor_id: &str, secret: &[u8; 32]) -> [u8; 32] {
@@ -88,6 +90,9 @@ pub fn draw_permutation(
 ) -> Result<Vec<usize>, DrawProtocolError> {
     if eligible_count == 0 {
         return Err(DrawProtocolError::EmptyEligibleList);
+    }
+    if input.federal.contest == 0 || input.federal.numbers.iter().any(|number| *number > 999_999) {
+        return Err(DrawProtocolError::InvalidFederalResult);
     }
     if input.auditor_reveals.len() != 3 {
         return Err(DrawProtocolError::InsufficientAuditors);

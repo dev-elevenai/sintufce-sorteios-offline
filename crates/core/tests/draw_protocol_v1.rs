@@ -88,3 +88,14 @@ fn hash_da_lista_independe_da_ordem_de_importacao() {
         canonical_eligible_hash(&[second, first]),
     );
 }
+
+#[test]
+fn rejeita_numero_federal_fora_do_formato_oficial() {
+    let mut invalid = input();
+    invalid.federal.numbers[2] = 1_000_000;
+
+    assert!(matches!(
+        draw_permutation(&invalid, 10),
+        Err(DrawProtocolError::InvalidFederalResult)
+    ));
+}
