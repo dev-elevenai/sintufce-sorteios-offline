@@ -36,6 +36,12 @@ struct SealInput {
     auditor_secrets: [String; 3],
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitInput {
+    auditor_secrets: [String; 3],
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DrawView {
@@ -52,6 +58,7 @@ fn initialize_database(path: &std::path::Path) -> Result<Connection, String> {
       CREATE TABLE IF NOT EXISTS event(id TEXT PRIMARY KEY,name TEXT NOT NULL,status TEXT NOT NULL,list_hash TEXT NOT NULL,prizes_hash TEXT NOT NULL,seed_hash TEXT,permutation TEXT,next_index INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS eligible(uuid TEXT PRIMARY KEY,ticket TEXT NOT NULL UNIQUE,name TEXT NOT NULL,siape TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS prize(position INTEGER PRIMARY KEY,name TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS auditor_commit(auditor_id TEXT PRIMARY KEY,commitment TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS draw(sequence INTEGER PRIMARY KEY,eligible_uuid TEXT NOT NULL UNIQUE,prize_position INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'VALID',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE IF NOT EXISTS audit(sequence INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,payload TEXT NOT NULL,previous_hash TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);")
         .map_err(|e| e.to_string())?;
@@ -86,7 +93,7 @@ fn import_package(path: String, database: State<'_, Database>) -> Result<EventSt
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
-    tx.execute_batch("DELETE FROM draw;DELETE FROM audit;DELETE FROM eligible;DELETE FROM prize;DELETE FROM event;").map_err(|e| e.to_string())?;
+    tx.execute_batch("DELETE FROM draw;DELETE FROM audit;DELETE FROM auditor_commit;DELETE FROM eligible;DELETE FROM prize;DELETE FROM event;").map_err(|e| e.to_string())?;
     tx.execute(
         "INSERT INTO event(id,name,status,list_hash,prizes_hash) VALUES(?1,?2,'CONFERIDO',?3,?4)",
         params![
@@ -134,26 +141,68 @@ fn get_event_state(database: State<'_, Database>) -> Result<Option<EventState>, 
 }
 
 #[tauri::command]
-fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventState, String> {
+fn commit_auditors(
+    input: CommitInput,
+    database: State<'_, Database>,
+) -> Result<EventState, String> {
     let mut connection = database
         .0
         .lock()
         .map_err(|_| "Banco local indisponível".to_string())?;
     let state = read_state(&connection)?;
     if state.status != "CONFERIDO" {
+        return Err("Os compromissos já foram registrados.".into());
+    }
+    let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for (index, value) in input.auditor_secrets.iter().enumerate() {
+        let secret = parse_secret(value, index)?;
+        let auditor_id = format!("AUDITOR-{}", index + 1);
+        let commitment = hex::encode(auditor_commitment(event_id, &auditor_id, &secret));
+        tx.execute(
+            "INSERT INTO auditor_commit(auditor_id,commitment) VALUES(?1,?2)",
+            params![auditor_id, commitment],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute("UPDATE event SET status='COMPROMETIDO'", [])
+        .map_err(|e| e.to_string())?;
+    append_audit(&tx, "AUDITOR_COMMITMENTS_REGISTERED", "{}")?;
+    tx.commit().map_err(|e| e.to_string())?;
+    read_state(&connection)
+}
+
+#[tauri::command]
+fn seal_event(input: SealInput, database: State<'_, Database>) -> Result<EventState, String> {
+    let mut connection = database
+        .0
+        .lock()
+        .map_err(|_| "Banco local indisponível".to_string())?;
+    let state = read_state(&connection)?;
+    if state.status != "COMPROMETIDO" {
         return Err("O evento não está disponível para lacre.".into());
     }
     let event_id = Uuid::parse_str(&state.id).map_err(|e| e.to_string())?;
     let mut reveals = Vec::new();
     for (index, value) in input.auditor_secrets.iter().enumerate() {
-        let bytes =
-            hex::decode(value.trim()).map_err(|_| format!("Segredo {} inválido.", index + 1))?;
-        let secret: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| format!("Segredo {} deve ter 32 bytes.", index + 1))?;
+        let secret = parse_secret(value, index)?;
         let auditor_id = format!("AUDITOR-{}", index + 1);
+        let commitment = auditor_commitment(event_id, &auditor_id, &secret);
+        let expected: String = connection
+            .query_row(
+                "SELECT commitment FROM auditor_commit WHERE auditor_id=?1",
+                params![auditor_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| format!("Compromisso do auditor {} ausente.", index + 1))?;
+        if hex::encode(commitment) != expected {
+            return Err(format!(
+                "Segredo do auditor {} não corresponde ao compromisso.",
+                index + 1
+            ));
+        }
         reveals.push(AuditorReveal {
-            commitment: auditor_commitment(event_id, &auditor_id, &secret),
+            commitment,
             auditor_id,
             secret,
         });
@@ -310,8 +359,10 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
     let state = read_state(&connection)?;
     let mut statement = connection.prepare("SELECT d.sequence,d.status,e.ticket,e.uuid,e.name,e.siape,p.position,p.name,d.created_at FROM draw d JOIN eligible e ON e.uuid=d.eligible_uuid JOIN prize p ON p.position=d.prize_position ORDER BY d.sequence").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |r| Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"ticket":r.get::<_,String>(2)?,"uuid":r.get::<_,String>(3)?,"name":r.get::<_,String>(4)?,"siape":r.get::<_,String>(5)?,"prizeOrder":r.get::<_,i64>(6)?,"prize":r.get::<_,String>(7)?,"createdAt":r.get::<_,String>(8)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let mut audit_statement = connection.prepare("SELECT sequence,kind,payload,previous_hash,hash,created_at FROM audit ORDER BY sequence").map_err(|e| e.to_string())?;
+    let audit = audit_statement.query_map([], |r| Ok(serde_json::json!({"sequence":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"payload":r.get::<_,String>(2)?,"previousHash":r.get::<_,String>(3)?,"hash":r.get::<_,String>(4)?,"createdAt":r.get::<_,String>(5)?}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
     let report = serde_json::to_vec_pretty(
-        &serde_json::json!({"protocol":"SINTUFCE-DRAW-V1","event":state,"draws":rows}),
+        &serde_json::json!({"protocol":"SINTUFCE-DRAW-V1","event":state,"draws":rows,"audit":audit}),
     )
     .map_err(|e| e.to_string())?;
     std::fs::write(path, report).map_err(|e| e.to_string())
@@ -346,6 +397,14 @@ fn append_audit(connection: &Connection, kind: &str, payload: &str) -> Result<()
     Ok(())
 }
 
+fn parse_secret(value: &str, index: usize) -> Result<[u8; 32], String> {
+    let bytes =
+        hex::decode(value.trim()).map_err(|_| format!("Segredo {} inválido.", index + 1))?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("Segredo {} deve ter 32 bytes.", index + 1))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -361,6 +420,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             import_package,
             get_event_state,
+            commit_auditors,
             seal_event,
             draw_next,
             mark_absent,
