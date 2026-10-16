@@ -1,6 +1,6 @@
 [package]
 name = "sintufce-sorteios-desktop"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "UNLICENSED"
 [lib]
