@@ -125,8 +125,11 @@ resultado = x mod bound
 Nunca usar `% bound` sem rejeição, pois introduz viés modular.
 
 Com essa função, aplicar Fisher-Yates de `n-1` até `1`. O resultado é uma
-permutação completa e única da lista canônica. A implementação é própria e
-versionada; não depende do comportamento interno de bibliotecas de RNG.
+permutação completa e única da lista canônica. A primitiva ChaCha20 usa a
+implementação revisada do projeto RustCrypto, com versão fixada no lockfile. O
+protocolo congela entrada, consumo dos bytes e vetor esperado; atualizar a
+biblioteca só é permitido se todos os vetores permanecerem idênticos. Qualquer
+mudança de saída exige uma nova versão do protocolo.
 
 ## 7. Associação aos prêmios
 
