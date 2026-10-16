@@ -613,6 +613,7 @@ name = "sintufce-sorteio-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "hex",
  "serde_json",
  "sintufce-sorteio-core",
 ]
@@ -639,6 +640,7 @@ name = "sintufce-sorteio-verifier"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "hex",
  "serde_json",
  "sintufce-sorteio-core",
 ]

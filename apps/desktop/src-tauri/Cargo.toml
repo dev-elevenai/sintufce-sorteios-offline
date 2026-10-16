@@ -10,6 +10,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 [dependencies]
 hex = "0.4"
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+getrandom = "0.3"
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,4 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 uuid = "1"
 sintufce-sorteio-core = { path = "../../../crates/core" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }
 [workspace]

@@ -20,7 +20,7 @@ fn trusted() -> TrustedKeys {
 fn signed_package(extra: Option<(&str, &[u8])>, eligible_bytes: &[u8]) -> Cursor<Vec<u8>> {
     let manifest = serde_json::json!({
         "algorithmVersion": "SINTUFCE/FEDERAL-SHUFFLE/V2",
-        "closedAt": "2026-12-01T12:00:00-03:00",
+        "closedAt": "2026-12-01T15:00:00.000Z",
         "eligibleCount": 1,
         "eventId": "9b68b494-977e-4db0-8e65-f7a2bc8e2cb2",
         "eventName": "Sorteio 2026",
@@ -79,7 +79,7 @@ fn aceita_pacote_v2_assinado_por_chave_confiavel() {
     let package = PackageValidator::validate_reader_with_keys(signed_package(None, ELEGIVEIS), &trusted()).unwrap();
     assert_eq!(package.manifest.format_version, 2);
     assert_eq!(package.manifest.key_id.as_deref(), Some(KEY_ID));
-    assert_eq!(package.package_hash.len(), 64);
+    assert_eq!(package.package_hash, "009c4135b7b4d2b0e05a28a07c1fc2d5d43470f63b76eeddda4b59907957d2d3");
 }
 
 #[test]

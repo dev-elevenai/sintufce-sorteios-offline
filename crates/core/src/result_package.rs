@@ -41,6 +41,7 @@ pub struct DrawRecord {
     pub eligible_uuid: Uuid,
     pub prize_order: u32,
     pub status: String,
+    pub called_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

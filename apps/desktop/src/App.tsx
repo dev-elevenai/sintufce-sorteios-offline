@@ -53,7 +53,7 @@ export function App() {
   }
   async function finish() { await execute(() => invoke<EventState>('finish_event').then(setEvent)) }
   async function exportReport() {
-    const path = await save({ defaultPath: `ata-${event?.name ?? 'sorteio'}.json`, filters: [{ name: 'Relatório verificável', extensions: ['json'] }] })
+    const path = await save({ defaultPath: `resultado-${event?.name ?? 'sorteio'}.sintufce-result`, filters: [{ name: 'Resultado SINTUFCE assinado', extensions: ['sintufce-result'] }] })
     if (path) await execute(() => invoke('export_report', { path }))
   }
 
@@ -65,6 +65,6 @@ export function App() {
     {event?.status === 'CONFERIDO' && <section className="panel"><h2>Lacrar com a Loteria Federal</h2><p>Informe os cinco números na ordem oficial. Seus últimos três dígitos formarão a chave única do resultado.</p><label>Concurso da Federal<input value={contest} onChange={e => setContest(e.target.value)} inputMode="numeric" /></label><div className="numbers">{numbers.map((value, index) => <input key={index} value={value} onChange={e => setNumbers(current => current.map((item, i) => i === index ? e.target.value : item))} placeholder={`${index + 1}º`} inputMode="numeric" />)}</div><button onClick={() => void seal()} disabled={busy || !contest || numbers.some(value => !value)}>Calcular resultado e lacrar</button></section>}
     {(event?.status === 'LACRADO' || event?.status === 'EM_SORTEIO') && <section className="panel draw-area"><h2>Área de sorteio</h2>{lastDraw && <article className="winner"><span>{lastDraw.sequence}ª chamada · {lastDraw.prize}</span><strong>{lastDraw.participantName}</strong><small>SIAPE {lastDraw.siape} · Ticket {lastDraw.ticket}</small><button className="secondary" onClick={() => void absent()}>Registrar ausência</button></article>}<button onClick={() => void draw()} disabled={busy || event.drawCount >= event.prizeCount}>{busy ? 'Confirmando...' : 'Realizar próxima chamada'}</button>{event.drawCount >= event.prizeCount && <button className="secondary" onClick={() => void finish()}>Finalizar evento</button>}</section>}
     {draws.length > 0 && <section className="panel"><h2>Histórico de chamadas</h2><table><thead><tr><th>#</th><th>Prêmio</th><th>Participante</th><th>Ticket</th><th>Situação</th></tr></thead><tbody>{draws.map(item => <tr key={item.sequence}><td>{item.sequence}</td><td>{item.prize}</td><td>{item.participantName}</td><td>{item.ticket}</td><td>{item.status === 'VALID' ? 'Válida' : 'Ausente'}</td></tr>)}</tbody></table></section>}
-    {event?.status === 'FINALIZADO' && <section className="panel"><h2>Evento finalizado</h2><p>O histórico está bloqueado para alterações.</p><button onClick={() => void exportReport()}>Exportar relatório verificável</button></section>}
+    {event?.status === 'FINALIZADO' && <section className="panel"><h2>Evento finalizado</h2><p>O histórico está bloqueado e o resultado será exportado com assinatura e auditoria.</p><button onClick={() => void exportReport()}>Exportar resultado assinado</button></section>}
   </main>
 }

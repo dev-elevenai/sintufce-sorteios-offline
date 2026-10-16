@@ -24,6 +24,7 @@ fn fixture(reverse: bool) -> (Vec<u8>, [u8; 32]) {
         eligible_uuid: canonical[*selected],
         prize_order: (index + 1) as u32,
         status: "VALID".into(),
+        called_at: format!("2026-12-01T15:00:0{}Z", index),
     }).collect();
     let payload = ResultPayload {
         participants,
