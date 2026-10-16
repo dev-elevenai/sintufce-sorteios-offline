@@ -374,7 +374,7 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
         Ok(DrawRecord { sequence: row.get::<_, u32>(0)?, eligible_uuid: row.get::<_, String>(1)?.parse().unwrap(), prize_order: row.get(2)?, status: row.get(3)?, called_at: format!("{}Z", called_at.replace(' ', "T")) })
     }).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let mut audit_statement = connection.prepare("SELECT sequence,kind,payload,previous_hash,hash FROM audit ORDER BY sequence").map_err(|e| e.to_string())?;
-    let audit = audit_statement.query_map([], |row| Ok(sintufce_sorteio_core::audit::AuditEntry { sequence: row.get::<_, u64>(0)?, kind: row.get(1)?, payload: row.get(2)?, previous_hash: row.get(3)?, hash: row.get(4)? }))
+    let audit = audit_statement.query_map([], |row| Ok(sintufce_sorteio_core::audit::AuditEntry { sequence: row.get::<_, i64>(0)? as u64, kind: row.get(1)?, payload: row.get(2)?, previous_hash: row.get(3)?, hash: row.get(4)? }))
         .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let payload = ResultPayload { participants, prize_orders, federal: FederalResult { contest: contest as u64, numbers }, seed_hash: state.seed_hash.clone().ok_or("Evento sem semente")?, draws };
     let manifest = ResultManifest::new(state.id.parse().map_err(|e: uuid::Error| e.to_string())?, export_nonce, source_hash, state.list_hash, state.prizes_hash);
@@ -383,7 +383,7 @@ fn export_report(path: String, database: State<'_, Database>) -> Result<(), Stri
 }
 
 fn read_state(connection: &Connection) -> Result<EventState, String> {
-    let mut state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)? })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
+    let state = connection.query_row("SELECT e.id,e.name,e.status,(SELECT COUNT(*) FROM eligible),(SELECT COUNT(*) FROM prize),(SELECT COUNT(*) FROM draw WHERE status='VALID'),e.list_hash,e.prizes_hash,e.seed_hash FROM event e LIMIT 1", [], |r| Ok(EventState { id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,eligible_count:r.get(3)?,prize_count:r.get(4)?,draw_count:r.get(5)?,list_hash:r.get(6)?,prizes_hash:r.get(7)?,seed_hash:r.get(8)? })).map_err(|e| if matches!(e,rusqlite::Error::QueryReturnedNoRows) {"NO_EVENT".into()} else {e.to_string()})?;
     Ok(state)
 }
 

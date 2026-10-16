@@ -9,7 +9,7 @@ pub fn protect(secret: &[u8; 32]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
-        System::Memory::LocalFree,
+        Foundation::LocalFree,
     };
     let input = CRYPT_INTEGER_BLOB { cbData: secret.len() as u32, pbData: secret.as_ptr() as *mut u8 };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: null_mut() };
@@ -25,7 +25,7 @@ pub fn unprotect(ciphertext: &[u8]) -> Result<[u8; 32], String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{
         Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
-        System::Memory::LocalFree,
+        Foundation::LocalFree,
     };
     let input = CRYPT_INTEGER_BLOB { cbData: ciphertext.len() as u32, pbData: ciphertext.as_ptr() as *mut u8 };
     let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: null_mut() };
