@@ -66,6 +66,33 @@ fn ordem_da_importacao_nao_altera_hash_da_lista() {
 }
 
 #[test]
+fn ordem_da_importacao_nao_altera_os_ganhadores() {
+    let participants = [
+        Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+        Uuid::parse_str("6ba7b810-9dad-41d1-80b4-00c04fd430c8").unwrap(),
+        Uuid::parse_str("7ba7b810-9dad-41d1-80b4-00c04fd430c8").unwrap(),
+        Uuid::parse_str("8ba7b810-9dad-41d1-80b4-00c04fd430c8").unwrap(),
+    ];
+    let mut forward = participants.to_vec();
+    let mut reverse = participants.into_iter().rev().collect::<Vec<_>>();
+    forward.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    reverse.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    let permutation = draw_proof(&DrawInput { federal: federal() }, forward.len())
+        .unwrap()
+        .permutation;
+
+    let winners_forward = permutation
+        .iter()
+        .map(|index| forward[*index])
+        .collect::<Vec<_>>();
+    let winners_reverse = permutation
+        .iter()
+        .map(|index| reverse[*index])
+        .collect::<Vec<_>>();
+    assert_eq!(winners_forward, winners_reverse);
+}
+
+#[test]
 fn ordem_de_importacao_dos_premios_nao_altera_hash() {
     let first = PrizeIdentity {
         order: 1,
