@@ -2,6 +2,7 @@ use chacha20::{
     cipher::{KeyIvInit, StreamCipher},
     ChaCha20,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
@@ -26,7 +27,7 @@ pub struct PrizeIdentity {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct FederalResult {
     pub contest: u64,
     pub numbers: [u32; 5],
