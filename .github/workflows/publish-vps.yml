@@ -1,0 +1,79 @@
+name: Publicar instalador no sistema
+
+# Quando uma release é publicada (o rascunho criado pelo workflow "Release
+# Windows" deixa de ser rascunho), envia o instalador para o servidor do
+# sistema web, que o oferece para download na tela de Sorteios.
+#
+# A chave SSH só consegue executar o script de publicação do servidor, que
+# confere o SHA-256 de cada arquivo antes de ativar a versão.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag a publicar (ex.: v0.2.1)'
+        required: true
+
+concurrency:
+  group: publicar-instalador
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Baixar os instaladores da release
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.]+)?$ ]] || { echo "tag invalida: $TAG"; exit 1; }
+          mkdir pacote
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir pacote \
+            --pattern '*_x64-setup.exe' --pattern '*_x64_en-US.msi'
+          ls -l pacote
+
+      - name: Gerar o manifesto com SHA-256
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          RELEASED_AT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)
+          python3 - "$VERSION" "$RELEASED_AT" <<'PY'
+          import glob, hashlib, json, os, sys
+          version, released_at = sys.argv[1:3]
+          files = []
+          for kind, pattern in (('exe', 'pacote/*_x64-setup.exe'), ('msi', 'pacote/*_x64_en-US.msi')):
+              found = glob.glob(pattern)
+              if not found:
+                  continue
+              path = found[0]
+              h = hashlib.sha256()
+              with open(path, 'rb') as fh:
+                  for chunk in iter(lambda: fh.read(1 << 20), b''):
+                      h.update(chunk)
+              files.append({'kind': kind, 'name': os.path.basename(path),
+                            'size': os.path.getsize(path), 'sha256': h.hexdigest()})
+          assert files, 'nenhum instalador encontrado na release'
+          json.dump({'version': version, 'releasedAt': released_at, 'files': files},
+                    open('pacote/manifest.json', 'w'), indent=2)
+          PY
+          cat pacote/manifest.json
+
+      - name: Enviar para o servidor
+        env:
+          SSH_KEY: ${{ secrets.VPS_PUBLISH_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/publish_key
+          chmod 600 ~/.ssh/publish_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          tar -c -C pacote . | ssh -i ~/.ssh/publish_key -o IdentitiesOnly=yes \
+            "sorteios-pub@$VPS_HOST" "publish ${TAG#v}"
